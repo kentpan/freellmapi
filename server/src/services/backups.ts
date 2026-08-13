@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { getDb, getDefaultDbPath, getSetting, setSetting } from '../db/index.js';
+import { getDb, getSetting, setSetting } from '../db/index.js';
 import type { Db } from '../db/types.js';
 import { restrictDirToOwner, restrictToOwner } from '../lib/file-permissions.js';
 import type { Scheduler } from '../lib/scheduler.js';
@@ -61,9 +61,8 @@ function isInternalTable(name: string): boolean {
 }
 
 function defaultBackupDir(): string {
-  const dbPath = getDefaultDbPath();
-  if (!dbPath || dbPath === ':memory:') return path.resolve(process.cwd(), 'backups');
-  return path.join(path.dirname(dbPath), 'backups');
+  // 项目根目录下的 data/backups/ (与部署包根目录的 data/ 保持一致)。
+  return path.resolve(process.cwd(), 'data', 'backups');
 }
 
 function resolveBackupDir(override?: string): string {
