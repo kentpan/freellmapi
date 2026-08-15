@@ -66,11 +66,52 @@ describe('POST /api/models (add model)', () => {
     expect(dup.status).toBe(409);
   });
 
-  it('rejects the custom platform and unknown platforms', async () => {
-    const custom = await request(app, 'POST', '/api/models', { platform: 'custom', modelId: 'x' });
-    expect(custom.status).toBe(400);
-
+  it('rejects unknown platforms', async () => {
     const unknown = await request(app, 'POST', '/api/models', { platform: 'nope', modelId: 'x' });
     expect(unknown.status).toBe(400);
+  });
+
+  it('rejects a custom endpoint that is not registered yet', async () => {
+    const res = await request(app, 'POST', '/api/models', {
+      platform: 'custom',
+      baseUrl: 'https://not-registered.example.com/v1',
+      modelId: 'x',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toMatch(/endpoint is not registered/i);
+  });
+
+  it('registers a model on an existing custom endpoint', async () => {
+    const created = await request(app, 'POST', '/api/keys/custom', {
+      baseUrl: 'https://relay.example.com/v1',
+      apiKey: 'ck-test-secret-1',
+      models: ['existing-model'],
+    });
+    expect(created.status).toBe(201);
+    const keyId = created.body.keyId as number;
+
+    const added = await request(app, 'POST', '/api/models', {
+      platform: 'custom',
+      keyId,
+      modelId: 'brand-new-model',
+      displayName: 'Brand New',
+      supportsTools: true,
+      supportsVision: false,
+    });
+    expect(added.status).toBe(201);
+    expect(added.body.model).toMatchObject({ platform: 'custom', modelId: 'brand-new-model', source: 'user' });
+
+    const db = getDb();
+    const row = db.prepare(
+      "SELECT * FROM models WHERE platform = 'custom' AND model_id = 'brand-new-model' AND endpoint_scope = 'https://relay.example.com/v1'",
+    ).get() as Record<string, unknown>;
+    expect(row).toBeTruthy();
+    expect(row.key_id).toBe(keyId);
+    expect(row.source).toBe('user');
+    // Routable: fallback chain + active profile membership.
+    const modelDbId = row.id as number;
+    expect(db.prepare('SELECT COUNT(*) AS n FROM fallback_config WHERE model_db_id = ?').get(modelDbId)).toEqual({ n: 1 });
+    const profile = db.prepare("SELECT id FROM profiles WHERE type = 'default' ORDER BY id LIMIT 1").get() as { id: number };
+    expect(db.prepare('SELECT COUNT(*) AS n FROM profile_models WHERE profile_id = ? AND model_db_id = ?').get(profile.id, modelDbId)).toEqual({ n: 1 });
   });
 });

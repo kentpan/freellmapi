@@ -14,6 +14,7 @@ import {
 } from '../services/model-state.js';
 import { ensureFallbackRow } from '../services/declarative-config.js';
 import { customModelSeed } from '../services/custom-model-seed.js';
+import { registerCustomChatModels, resolveEndpointRef } from './keys.js';
 import { syncCatalog } from '../services/catalog-sync.js';
 import { pruneUnavailableSavedFusionConfig } from '../services/fusion.js';
 import { getActiveProfileId } from '../services/profile-models.js';
@@ -45,16 +46,22 @@ const modelUpdateSchema = z.object({
 
 // Add-model form on the Config page. Only the identity fields are required;
 // the rest default to the catalog median so a hand-added model starts routable
-// (same seeding as the custom-provider path — see customModelSeed).
+// (same seeding as the custom-provider path — see customModelSeed). A custom
+// endpoint is named by its api_keys row (keyId) or baseUrl, like POST /custom.
 const createModelSchema = z.object({
   platform: z.string().trim().min(1).max(100),
   modelId: z.string().trim().min(1).max(200),
+  keyId: z.number().int().positive().optional(),
+  baseUrl: z.string().trim().max(2000).optional(),
   displayName: z.string().trim().max(200).optional(),
   contextWindow: z.number().int().positive().nullable().optional(),
   supportsVision: z.boolean().optional(),
   supportsTools: z.boolean().optional(),
   enabled: z.boolean().optional(),
-}).strict();
+}).strict().refine(
+  (d) => d.platform !== 'custom' || d.keyId !== undefined || (d.baseUrl !== undefined && d.baseUrl.trim() !== ''),
+  { message: 'keyId or baseUrl is required for a custom endpoint' },
+);
 
 const MODEL_FIELD_COLUMNS: Record<keyof ModelOverridePatch | 'enabled' | 'deprecated', string> = {
   displayName: 'display_name',
@@ -303,13 +310,44 @@ modelsRouter.post('/', (req: Request, res: Response) => {
     return;
   }
 
-  const { platform, modelId, displayName, contextWindow, supportsVision, supportsTools, enabled } = parsed.data;
-  if (platform === 'custom' || !hasProvider(platform as Platform)) {
+  const { platform, modelId, keyId, baseUrl, displayName, contextWindow, supportsVision, supportsTools, enabled } = parsed.data;
+
+  const db = getDb();
+
+  // Custom endpoints register models through the same machinery as the
+  // provider add form (POST /custom): identity is per (model_id, endpoint),
+  // ranks seed at the catalog median, and fallback/profile wiring is included.
+  if (platform === 'custom') {
+    try {
+      const endpoint = resolveEndpointRef({ keyId, baseUrl });
+      if (endpoint.keyId === null) {
+        res.status(400).json({ error: { message: 'endpoint is not registered. Add the custom provider first.' } });
+        return;
+      }
+      const registered = db.transaction(() =>
+        registerCustomChatModels(db, endpoint.baseUrl, endpoint.keyId as number, [{
+          modelId,
+          displayName: displayName ?? null,
+          supportsTools,
+          supportsVision,
+        }]),
+      )();
+      const first = registered[0]!;
+      res.status(first.created ? 201 : 200).json({
+        model: { id: first.modelDbId, platform: 'custom', modelId, source: 'user' },
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status ?? 400;
+      res.status(status).json({ error: { message: err instanceof Error ? err.message : String(err) } });
+    }
+    return;
+  }
+
+  if (!hasProvider(platform as Platform)) {
     res.status(400).json({ error: { message: 'Unknown or unsupported platform. Add the platform key on the Keys page first.' } });
     return;
   }
 
-  const db = getDb();
   const duplicate = db.prepare("SELECT id FROM models WHERE platform = ? AND model_id = ? AND endpoint_scope = ''").get(platform, modelId);
   if (duplicate) {
     res.status(409).json({ error: { message: 'A model with that ID already exists on this platform.' } });

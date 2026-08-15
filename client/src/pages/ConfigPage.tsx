@@ -34,6 +34,7 @@ interface ConfigModel {
   supportsVision: boolean
   supportsTools: boolean
   contextWindow: number | null
+  endpointScope: string | null
   source: 'catalog' | 'custom'
 }
 
@@ -486,13 +487,12 @@ function ModelsTab() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex items-center gap-1">
-                        {key.platform !== 'custom' && (
-                          <AddModelDialog
-                            models={models}
-                            defaultPlatform={key.platform as Platform}
-                            onAdded={invalidateAll}
-                          />
-                        )}
+                        <AddModelDialog
+                          models={models}
+                          keys={keys}
+                          defaultProvider={key.platform === 'custom' ? `custom:${key.id}` : key.platform}
+                          onAdded={invalidateAll}
+                        />
                         <EditProviderDialog keyRow={key} onSaved={invalidateAll} />
                         <Button
                           variant="ghost"
@@ -519,7 +519,7 @@ function ModelsTab() {
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <h2 className="text-sm font-medium">{t('config.models.heading')}</h2>
           <div className="flex items-center gap-2">
-            <AddModelDialog models={models} trigger="text" onAdded={invalidateAll} />
+            <AddModelDialog models={models} keys={keys} trigger="text" onAdded={invalidateAll} />
             <Button variant="outline" size="sm" onClick={() => syncModels.mutate()} disabled={syncModels.isPending}>
               <RefreshCw className={syncModels.isPending ? 'animate-spin' : ''} />
               {t('config.models.syncModels')}
@@ -654,7 +654,7 @@ function AddStandardPlatformDialog({ onAdded }: { onAdded: () => void }) {
             <Label className="text-xs">{t('config.providers.platform')}</Label>
             <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
               <SelectTrigger className="w-full">
-                <SelectValue />
+                <SelectValue>{PLATFORMS.find((p) => p.value === platform)?.label}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {PLATFORMS.map((p) => (
@@ -897,18 +897,21 @@ function EditProviderDialog({ keyRow, onSaved }: { keyRow: ApiKey; onSaved: () =
 
 function AddModelDialog({
   models,
-  defaultPlatform,
+  keys,
+  defaultProvider,
   trigger = 'icon',
   onAdded,
 }: {
   models: ConfigModel[]
-  defaultPlatform?: Platform
+  keys: ApiKey[]
+  /** '' (manual) | a native platform id | `custom:<api-key-id>`. */
+  defaultProvider?: string
   trigger?: 'icon' | 'text'
   onAdded: () => void
 }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
-  const [platform, setPlatform] = useState<Platform | ''>(defaultPlatform ?? '')
+  const [provider, setProvider] = useState<string>('')
   const [referenceId, setReferenceId] = useState('')
   const [modelId, setModelId] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -917,10 +920,28 @@ function AddModelDialog({
   const [supportsTools, setSupportsTools] = useState(false)
   const [attempted, setAttempted] = useState(false)
 
-  const platformModels = models.filter((m) => m.platform === platform)
+  const customKeys = keys.filter((k) => k.platform === 'custom')
+  // Provider selector: native platforms first, then each custom endpoint.
+  const providerOptions: { value: string; label: string }[] = [
+    ...PLATFORMS.map((p) => ({ value: p.value, label: p.label })),
+    ...customKeys.map((k) => ({
+      value: `custom:${k.id}`,
+      label: `${t('config.providers.custom')} · ${k.label || k.baseUrl || `#${k.id}`}`,
+    })),
+  ]
+
+  const isCustom = provider.startsWith('custom:')
+  const customKey = isCustom ? customKeys.find((k) => `custom:${k.id}` === provider) : undefined
+  const customScope = customKey?.baseUrl ?? ''
+
+  // Reference-model pool: native rows for the chosen platform, or the chosen
+  // custom endpoint's own rows (matched by endpoint_scope == base_url).
+  const platformModels = isCustom
+    ? models.filter((m) => m.platform === 'custom' && m.endpointScope === customScope)
+    : models.filter((m) => m.platform === provider)
 
   const openDialog = () => {
-    setPlatform(defaultPlatform ?? '')
+    setProvider(defaultProvider ?? '')
     setReferenceId('')
     setModelId('')
     setDisplayName('')
@@ -985,37 +1006,52 @@ function AddModelDialog({
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault()
-            if (!platform || !modelId.trim()) {
+            if (!provider || !modelId.trim()) {
               setAttempted(true)
               return
             }
             setAttempted(false)
-            add.mutate({
-              platform,
-              modelId: modelId.trim(),
-              displayName: displayName.trim() || undefined,
-              contextWindow: contextNumber,
-              supportsVision,
-              supportsTools,
-              enabled: true,
-            })
+            add.mutate(
+              isCustom
+                ? {
+                    platform: 'custom',
+                    keyId: customKey?.id,
+                    modelId: modelId.trim(),
+                    displayName: displayName.trim() || undefined,
+                    contextWindow: contextNumber,
+                    supportsVision,
+                    supportsTools,
+                    enabled: true,
+                  }
+                : {
+                    platform: provider,
+                    modelId: modelId.trim(),
+                    displayName: displayName.trim() || undefined,
+                    contextWindow: contextNumber,
+                    supportsVision,
+                    supportsTools,
+                    enabled: true,
+                  },
+            )
           }}
         >
           <div className="space-y-2">
             <Label className="text-xs">{t('config.providers.platform')}</Label>
-            <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
-              <SelectTrigger className="w-full" aria-invalid={attempted && !platform}>
-                <SelectValue placeholder={t('validation.required')} />
+            <Select value={provider} onValueChange={(v) => setProvider(v ?? '')}>
+              <SelectTrigger className="w-full" aria-invalid={attempted && !provider}>
+                <SelectValue placeholder={t('validation.required')}>
+                  {providerOptions.find((p) => p.value === provider)?.label}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                {PLATFORMS.map((p) => (
+                {providerOptions.map((p) => (
                   <SelectItem key={p.value} value={p.value}>
                     {p.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {attempted && !platform && <FieldError error={t('validation.required')} />}
+            {attempted && !provider && <FieldError error={t('validation.required')} />}
           </div>
 
           <div className="space-y-2">
@@ -1040,7 +1076,14 @@ function AddModelDialog({
               <Label className="text-xs">{t('config.models.referenceModel')}</Label>
               <Select value={referenceId} onValueChange={applyReference}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder={t('config.models.noReference')} />
+                  <SelectValue placeholder={t('config.models.noReference')}>
+                    {referenceId
+                      ? (() => {
+                          const ref = models.find((m) => String(m.id) === referenceId)
+                          return ref ? ref.displayName || ref.modelId : undefined
+                        })()
+                      : undefined}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="">{t('config.models.noReference')}</SelectItem>

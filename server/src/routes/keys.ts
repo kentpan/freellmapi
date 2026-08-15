@@ -729,6 +729,10 @@ interface RegisteredCustomModel {
   created: boolean;
 }
 
+export type { CustomChatModelEntry, RegisteredCustomModel };
+
+export { resolveEndpointRef, registerCustomChatModels };
+
 /**
  * Register chat models bound to a custom endpoint's key — the shared write
  * path behind POST /custom and the bulk key importer (#382). Runs inside the
