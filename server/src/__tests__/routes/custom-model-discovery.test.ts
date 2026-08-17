@@ -141,10 +141,13 @@ describe('custom endpoint model discovery (#488)', () => {
     expect(String(body.error.message)).toMatch(/could not reach/i);
   });
 
-  it('passes an upstream 401 through as 401', async () => {
+  it('relays an upstream 401 as 502, not as a dashboard 401', async () => {
     stubRelay({ error: { message: 'invalid api key' } }, 401);
     const { status, body } = await post(app, DISCOVER, { baseUrl: ENDPOINT, apiKey: 'bad' });
-    expect(status).toBe(401);
+    // An upstream key rejection must never look like an expired dashboard
+    // session: the client drops its token on any 401 and bounces the operator
+    // to the login screen. The reason stays in the message body.
+    expect(status).toBe(502);
     expect(String(body.error.message)).toMatch(/invalid api key/i);
   });
 

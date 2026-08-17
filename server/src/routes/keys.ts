@@ -4,7 +4,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import path from 'path';
 import { getDb } from '../db/index.js';
-import { resolveProvider, getAllProviders } from '../providers/index.js';
+import { resolveProvider, getAllProviders, getProvider } from '../providers/index.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
 import { parseKeysFromFile, stripJsoncComments, stripTrailingCommas } from '../lib/key-parser.js';
 import { assessProviderUrl } from '../lib/url-guard.js';
@@ -17,6 +17,7 @@ import { discoverEndpointModels, probeEndpointModel, ModelDiscoveryError } from 
 import { probeEmbeddingDimensions, registerCustomEmbeddingModel } from '../services/embeddings.js';
 import { endpointScopeForBaseUrl, normalizeBaseUrl } from '../lib/endpoint-scope.js';
 import type { Db } from '../db/types.js';
+import type { Platform } from '@freellmapi/shared/types.js';
 import { parseModelScope } from '../lib/model-scope.js';
 import { KEY_PROXY_URL_ERROR, KEY_PROXY_URL_MAX, decryptProxyUrl, encryptProxyUrl, isValidKeyProxyUrl, maskProxyUrl } from '../lib/key-proxy.js';
 
@@ -891,16 +892,75 @@ async function rejectUnsafeBaseUrl(baseUrl: string, res: Response): Promise<bool
 // immediately. This reads ONLY the operator's own base_url with the operator's
 // own key — it never reads or refreshes the published provider catalog. Nothing
 // is written: the picked ids come back through POST /custom to be registered.
+// `platform` (a built-in platform id) is accepted as an alternative reference
+// for the Config page's add-model dialog: the base URL then comes from the
+// trusted provider registry and the credential from the platform's stored key.
 const discoverModelsSchema = z.object({
   baseUrl: z.string().url('baseUrl must be a valid URL').optional(),
   keyId: z.number().int().positive().optional(),
+  platform: z.enum(PLATFORMS).optional(),
   // Lets the Keys page fetch a list for an endpoint the user is still typing in,
   // before it has been saved. Falls back to the endpoint's stored credential.
   apiKey: z.string().optional(),
 }).refine(
-  d => d.baseUrl !== undefined || d.keyId !== undefined,
-  { message: 'baseUrl or keyId is required' },
+  d => d.baseUrl !== undefined || d.keyId !== undefined || d.platform !== undefined,
+  { message: 'baseUrl, keyId or platform is required' },
 );
+
+/**
+ * Resolve a built-in platform's catalog endpoint for discovery. The base URL
+ * comes from the trusted provider registry (no SSRF surface), and the
+ * credential from the platform's first stored key — the same one the health
+ * cycle would use. Keyless platforms store the 'no-key' sentinel, so discovery
+ * keeps working for them.
+ */
+function resolvePlatformRef(platform: string): CustomEndpointRef {
+  const provider = getProvider(platform as Platform);
+  if (!provider?.apiBaseUrl) {
+    throw Object.assign(new Error(`Platform "${platform}" has no configured base URL`), { status: 400 });
+  }
+  const row = getDb().prepare(
+    'SELECT encrypted_key, iv, auth_tag FROM api_keys WHERE platform = ? ORDER BY id',
+  ).get(platform) as { encrypted_key: string; iv: string; auth_tag: string } | undefined;
+  let storedKey: string | null = null;
+  if (row) {
+    try {
+      storedKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    } catch {
+      // The catalog may still be public; leave the key null.
+    }
+  }
+  return { baseUrl: provider.apiBaseUrl, keyId: null, storedKey };
+}
+
+/**
+ * Resolve whichever reference the discovery/probe schemas carry: a built-in
+ * platform id, or a custom endpoint key id / raw base URL.
+ */
+function resolveDiscoverRef(ref: { keyId?: number; baseUrl?: string; platform?: (typeof PLATFORMS)[number] }): CustomEndpointRef {
+  if (ref.platform !== undefined && ref.platform !== 'custom') {
+    return resolvePlatformRef(ref.platform);
+  }
+  return resolveEndpointRef(ref);
+}
+
+// The built-in provider registry is trusted; only user-supplied custom base
+// URLs are SSRF-guarded.
+function discoverIsTrusted(platform: (typeof PLATFORMS)[number] | undefined): boolean {
+  return platform !== undefined && platform !== 'custom';
+}
+
+/**
+ * Discovery/probe carry the upstream's verdict in the MESSAGE; their HTTP status
+ * must not echo an upstream 401/403. The client treats any 401 as an expired
+ * dashboard session (drops the token, bounces to the login screen), and a 403
+ * reads like the whole dashboard is forbidden. Both actually mean "the upstream
+ * rejected ITS key", so answer as a gateway problem and let the message carry
+ * the detail.
+ */
+function discoveryErrorStatus(err: ModelDiscoveryError): number {
+  return err.status === 401 || err.status === 403 ? 502 : err.status;
+}
 
 keysRouter.post('/custom/discover-models', async (req: Request, res: Response) => {
   const parsed = discoverModelsSchema.safeParse(req.body);
@@ -911,13 +971,15 @@ keysRouter.post('/custom/discover-models', async (req: Request, res: Response) =
 
   let endpoint: CustomEndpointRef;
   try {
-    endpoint = resolveEndpointRef(parsed.data);
+    endpoint = resolveDiscoverRef(parsed.data);
   } catch (err: any) {
     res.status(err.status ?? 400).json({ error: { message: err.message } });
     return;
   }
 
-  if (await rejectUnsafeBaseUrl(endpoint.baseUrl, res)) return;
+  if (!discoverIsTrusted(parsed.data.platform)) {
+    if (await rejectUnsafeBaseUrl(endpoint.baseUrl, res)) return;
+  }
 
   // A submitted key wins (the user may be rotating it); otherwise use what the
   // endpoint already has. Local servers with auth off keep the 'no-key'
@@ -928,10 +990,14 @@ keysRouter.post('/custom/discover-models', async (req: Request, res: Response) =
     const discovered = await discoverEndpointModels(endpoint.baseUrl, apiKey);
 
     // "Already registered" means bound to THIS endpoint — any key of the pool
-    // counts, since they all serve the same model list (#619).
+    // counts, since they all serve the same model list (#619). Built-in
+    // platforms instead match the rows already registered under their id.
     const db = getDb();
     const registeredIds = new Set<string>();
-    if (endpoint.keyId != null) {
+    if (discoverIsTrusted(parsed.data.platform)) {
+      const rows = db.prepare('SELECT model_id FROM models WHERE platform = ?').all(parsed.data.platform) as { model_id: string }[];
+      for (const row of rows) registeredIds.add(row.model_id);
+    } else if (endpoint.keyId != null) {
       const poolIds = [...customEndpointKeyIds(db, endpoint.keyId)];
       const placeholders = poolIds.map(() => '?').join(', ');
       const rows = db.prepare(
@@ -950,7 +1016,7 @@ keysRouter.post('/custom/discover-models', async (req: Request, res: Response) =
     });
   } catch (err: any) {
     if (err instanceof ModelDiscoveryError) {
-      res.status(err.status).json({ error: { message: err.message } });
+      res.status(discoveryErrorStatus(err)).json({ error: { message: err.message } });
       return;
     }
     res.status(502).json({ error: { message: `Model discovery failed: ${err?.message ?? 'unknown error'}` } });
@@ -972,13 +1038,15 @@ keysRouter.post('/custom/probe', async (req: Request, res: Response) => {
 
   let endpoint: CustomEndpointRef;
   try {
-    endpoint = resolveEndpointRef(parsed.data);
+    endpoint = resolveDiscoverRef(parsed.data);
   } catch (err: any) {
     res.status(err.status ?? 400).json({ error: { message: err.message } });
     return;
   }
 
-  if (await rejectUnsafeBaseUrl(endpoint.baseUrl, res)) return;
+  if (!discoverIsTrusted(parsed.data.platform)) {
+    if (await rejectUnsafeBaseUrl(endpoint.baseUrl, res)) return;
+  }
 
   const apiKey = parsed.data.apiKey?.trim() || endpoint.storedKey || 'no-key';
 
@@ -988,7 +1056,12 @@ keysRouter.post('/custom/probe', async (req: Request, res: Response) => {
   // (#619), and knowing the id up front also skips the discovery round-trip.
   // Only an endpoint with nothing registered falls back to discovery.
   let registeredModelId: string | null = null;
-  if (endpoint.keyId != null) {
+  if (discoverIsTrusted(parsed.data.platform)) {
+    const row = getDb().prepare(
+      'SELECT model_id FROM models WHERE platform = ? ORDER BY id LIMIT 1',
+    ).get(parsed.data.platform) as { model_id: string } | undefined;
+    registeredModelId = row?.model_id ?? null;
+  } else if (endpoint.keyId != null) {
     const db = getDb();
     const poolIds = [...customEndpointKeyIds(db, endpoint.keyId)];
     const placeholders = poolIds.map(() => '?').join(', ');
@@ -1017,7 +1090,7 @@ keysRouter.post('/custom/probe', async (req: Request, res: Response) => {
     res.json({ modelId: probe.modelId, latencyMs: probe.latencyMs });
   } catch (err: any) {
     if (err instanceof ModelDiscoveryError) {
-      res.status(err.status).json({ error: { message: err.message } });
+      res.status(discoveryErrorStatus(err)).json({ error: { message: err.message } });
       return;
     }
     res.status(502).json({ error: { message: `Probe failed: ${err?.message ?? 'unknown error'}` } });

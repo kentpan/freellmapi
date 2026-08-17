@@ -365,6 +365,10 @@ export class OpenAICompatProvider extends BaseProvider {
     return `${this.baseUrl}/models`;
   }
 
+  override get apiBaseUrl(): string | null {
+    return this.baseUrl;
+  }
+
   /**
    * GET a catalog-style endpoint with this provider's auth header, extra
    * headers, proxy routing, timeout policy and quota bookkeeping. Shared by

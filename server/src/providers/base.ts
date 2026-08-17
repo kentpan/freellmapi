@@ -223,6 +223,14 @@ export abstract class BaseProvider {
    * on outgoing requests. Defaults to false; set by subclasses. */
   keyless = false;
 
+  /** Base URL this provider's OpenAI-compatible API is served from, or null
+   * when there is no fixed root (custom per-key endpoints, Cloudflare whose
+   * URL embeds the account id). The model catalog then lives at
+   * baseUrl + /models. Subclasses that carry their own base URL override this. */
+  get apiBaseUrl(): string | null {
+    return null;
+  }
+
   abstract chatCompletion(
     apiKey: string,
     messages: ChatMessage[],

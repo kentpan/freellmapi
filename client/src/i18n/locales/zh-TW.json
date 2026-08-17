@@ -918,7 +918,15 @@
       "referenceModel": "Reference model",
       "noReference": "None (use defaults)",
       "contextWindow": "Context window",
-      "modelId": "Model ID"
+      "modelId": "Model ID",
+      "fetchModels": "取得",
+      "fetchModelsHint": "填寫 Base URL 後點擊取得，拉取提供方的模型清單，勾選要新增的模型。",
+      "pickModelPlaceholder": "選擇模型",
+      "pickLabelPlaceholder": "選擇標籤",
+      "noExistingLabels": "暫無已有標籤",
+      "labelRuleHint": "在所有提供方使用相同的模型 ID 可自動故障轉移；使用某個提供方專屬的 ID 則會將請求鎖定到該提供方。",
+      "editModel": "編輯模型",
+      "saved": "模型已儲存"
     },
     "backup": {
       "create": "Create backup",

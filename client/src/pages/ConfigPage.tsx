@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, ExternalLink, Pencil, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 import { apiFetch, getToken } from '@/lib/api'
@@ -7,7 +7,6 @@ import { toast } from '@/lib/toast'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
@@ -18,6 +17,7 @@ import { Dialog, DialogClose, DialogPopup, DialogTitle, DialogDescription } from
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { PLATFORMS, statusDot, statusLabelKey } from '@/components/keys/shared'
+import { type DiscoveredModel } from '@/components/keys/discover-models-dialog'
 import { usePremium } from '@/hooks/use-premium'
 import { isHttpUrl } from '@/lib/validate'
 import type { ApiKey, Platform } from '../../../shared/types'
@@ -91,14 +91,6 @@ async function downloadBackupFile(id: number, filename: string): Promise<void> {
   a.click()
   a.remove()
   URL.revokeObjectURL(url)
-}
-
-function parseModelList(raw: string): string[] {
-  const seen = new Set<string>()
-  return raw
-    .split(/[\n,]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !seen.has(s) && seen.add(s))
 }
 
 function platformLabel(platform: string): string {
@@ -392,6 +384,11 @@ function ModelsTab() {
     },
   })
 
+  const onModelChanged = () => {
+    queryClient.invalidateQueries({ queryKey: ['models'] })
+    queryClient.invalidateQueries({ queryKey: ['fallback'] })
+  }
+
   const syncModels = useMutation({
     meta: { silenceToast: true },
     mutationFn: () =>
@@ -577,15 +574,18 @@ function ModelsTab() {
                     <TableCell>{model.supportsVision ? '✓' : '—'}</TableCell>
                     <TableCell>{model.supportsTools ? '✓' : '—'}</TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => {
-                          if (window.confirm(t('config.models.confirmDeleteModel'))) deleteModel.mutate(model.id)
-                        }}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <EditModelDialog model={model} models={models} onSaved={onModelChanged} />
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => {
+                            if (window.confirm(t('config.models.confirmDeleteModel'))) deleteModel.mutate(model.id)
+                          }}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -700,10 +700,14 @@ function AddCustomProviderDialog({ onAdded }: { onAdded: () => void }) {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [baseUrl, setBaseUrl] = useState('')
-  const [modelIds, setModelIds] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [label, setLabel] = useState('')
   const [attempted, setAttempted] = useState(false)
+  // Models the endpoint actually serves, fetched from baseUrl + /models once
+  // the operator clicks 获取. Picked ids replace the old manual textarea.
+  const [discovered, setDiscovered] = useState<DiscoveredModel[] | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [fetchError, setFetchError] = useState<string | null>(null)
 
   const add = useMutation({
     meta: { silenceToast: true },
@@ -713,21 +717,68 @@ function AddCustomProviderDialog({ onAdded }: { onAdded: () => void }) {
       toast.success(t('keys.modelAdded'))
       setOpen(false)
       setBaseUrl('')
-      setModelIds('')
       setApiKey('')
       setLabel('')
       setAttempted(false)
+      setDiscovered(null)
+      setSelected(new Set())
+      setFetchError(null)
       onAdded()
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
   })
 
-  const models = parseModelList(modelIds)
+  const discover = useMutation<{ models: DiscoveredModel[] }, Error, { baseUrl: string; apiKey?: string }>({
+    mutationFn: (body) =>
+      apiFetch('/api/keys/custom/discover-models', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (data) => {
+      setDiscovered(data.models)
+      setSelected(new Set())
+      setFetchError(null)
+    },
+    onError: (error) => {
+      setDiscovered([])
+      setFetchError(error instanceof Error ? error.message : String(error))
+    },
+  })
+
   const baseUrlError = !baseUrl.trim() ? t('validation.required') : !isHttpUrl(baseUrl) ? t('validation.url') : null
-  const modelsError = models.length === 0 ? t('validation.required') : null
+  const modelsError = selected.size === 0 ? t('validation.required') : null
+
+  const selectable = (discovered ?? []).filter((m) => !m.registered)
+  const allSelected = selectable.length > 0 && selectable.every((m) => selected.has(m.id))
+  const toggleAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      for (const model of selectable) {
+        if (allSelected) next.delete(model.id)
+        else next.add(model.id)
+      }
+      return next
+    })
+  }
+  const toggleModel = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v)
+        if (!v) {
+          // Drop fetch state when closed so reopening starts clean.
+          setDiscovered(null)
+          setSelected(new Set())
+          setFetchError(null)
+        }
+      }}
+    >
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         {t('config.providers.addCustom')}
       </Button>
@@ -751,7 +802,7 @@ function AddCustomProviderDialog({ onAdded }: { onAdded: () => void }) {
             setAttempted(false)
             add.mutate({
               baseUrl: baseUrl.trim(),
-              models,
+              models: [...selected],
               apiKey: apiKey.trim() || undefined,
               label: label.trim() || undefined,
             })
@@ -769,14 +820,66 @@ function AddCustomProviderDialog({ onAdded }: { onAdded: () => void }) {
           </div>
 
           <div className="space-y-2">
-            <Label className="text-xs">{t('config.models.modelIdsPlaceholder')}</Label>
-            <Textarea
-              value={modelIds}
-              onChange={(e) => setModelIds(e.target.value)}
-              placeholder="gpt-4o-mini&#10;claude-3-5-sonnet"
-              rows={4}
-              aria-invalid={attempted && !!modelsError}
-            />
+            <div className="flex items-center justify-between gap-2">
+              <Label className="text-xs">{t('config.models.modelId')}</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!baseUrl.trim() || discover.isPending}
+                onClick={() =>
+                  discover.mutate({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim() || undefined })
+                }
+              >
+                {discover.isPending ? t('common.loading') : t('config.models.fetchModels')}
+              </Button>
+            </div>
+            {discovered === null ? (
+              <p className="text-xs text-muted-foreground">{t('config.models.fetchModelsHint')}</p>
+            ) : fetchError ? (
+              <p className="text-xs text-destructive">{fetchError}</p>
+            ) : discovered.length === 0 ? (
+              <p className="text-xs text-muted-foreground">{t('keys.discoverEmpty')}</p>
+            ) : (
+              <>
+                <label className="flex items-center gap-2 text-xs font-medium cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-primary"
+                    checked={allSelected}
+                    disabled={selectable.length === 0}
+                    onChange={toggleAll}
+                  />
+                  <span>{t('keys.discoverSelectAll')}</span>
+                </label>
+                <div className="max-h-[30vh] overflow-y-auto rounded-2xl border divide-y">
+                  {discovered.map((model) => (
+                    <label
+                      key={model.id}
+                      className={`flex items-center gap-2 px-3 py-2 text-xs ${
+                        model.registered ? 'bg-muted/40' : 'cursor-pointer hover:bg-muted/30'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="size-4 accent-primary"
+                        checked={model.registered || selected.has(model.id)}
+                        disabled={model.registered}
+                        onChange={() => toggleModel(model.id)}
+                      />
+                      <code className="min-w-0 flex-1 truncate font-mono" title={model.id}>
+                        {model.id}
+                      </code>
+                      {model.registered && (
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {t('keys.discoverAlreadyAdded')}
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
             {attempted && <FieldError error={modelsError} />}
           </div>
 
@@ -891,6 +994,79 @@ function EditProviderDialog({ keyRow, onSaved }: { keyRow: ApiKey; onSaved: () =
   )
 }
 
+/**
+ * Label (聚合模型 ID) editor: a plain text input with a picker of every label
+ * already in use across the catalog. Each entry is annotated with how many
+ * providers serve it, so the operator can either join an existing failover
+ * group or type a provider-specific label on purpose.
+ */
+function ExistingLabelPicker({
+  models,
+  value,
+  onChange,
+  placeholder = 'GPT-4o mini 2',
+}: {
+  models: ConfigModel[]
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+}) {
+  const { t } = useI18n()
+
+  const labelCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const model of models) {
+      const label = model.displayName || model.modelId
+      counts.set(label, (counts.get(label) ?? 0) + 1)
+    }
+    // Most-covered labels first (likely failover groups), then alphabetically.
+    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  }, [models])
+
+  const currentInList = labelCounts.some(([label]) => label === value)
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Input
+          className="min-w-0 flex-1"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          autoComplete="off"
+        />
+        <Select
+          value={currentInList ? value : ''}
+          onValueChange={(v) => onChange(v ?? '')}
+          disabled={labelCounts.length === 0}
+        >
+          <SelectTrigger className="w-48 shrink-0">
+            <SelectValue placeholder={t('config.models.pickLabelPlaceholder')}>
+              {currentInList ? value : undefined}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent className="overflow-x-auto">
+            {labelCounts.length === 0 && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">{t('config.models.noExistingLabels')}</p>
+            )}
+            {labelCounts.map(([label, count]) => (
+              <SelectItem key={label} value={label}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-xs">{label}</span>
+                  <span className="shrink-0 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                    ({count})
+                  </span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <p className="text-[11px] text-muted-foreground">{t('config.models.labelRuleHint')}</p>
+    </div>
+  )
+}
+
 /* ------------------------------------------------------------------ */
 /* Data backup tab                                                    */
 /* ------------------------------------------------------------------ */
@@ -919,6 +1095,9 @@ function AddModelDialog({
   const [supportsVision, setSupportsVision] = useState(false)
   const [supportsTools, setSupportsTools] = useState(false)
   const [attempted, setAttempted] = useState(false)
+  // Last model id picked from the fetched list (the select's own value). The
+  // text input stays the source of truth — typing by hand is always allowed.
+  const [pickedId, setPickedId] = useState('')
 
   const customKeys = keys.filter((k) => k.platform === 'custom')
   // Provider selector: native platforms first, then each custom endpoint.
@@ -933,6 +1112,33 @@ function AddModelDialog({
   const isCustom = provider.startsWith('custom:')
   const customKey = isCustom ? customKeys.find((k) => `custom:${k.id}` === provider) : undefined
   const customScope = customKey?.baseUrl ?? ''
+
+  // Once a platform is picked, ask it (base URL + /models, resolved server-side
+  // from the provider registry for native platforms or the key's base URL for
+  // custom endpoints) what it actually serves, so the model id becomes a pick
+  // from the real list instead of a hand-typed guess.
+  const discover = useQuery<{ models: DiscoveredModel[] }>({
+    queryKey: ['model-discover', provider],
+    queryFn: () =>
+      apiFetch('/api/keys/custom/discover-models', {
+        method: 'POST',
+        body: JSON.stringify(isCustom ? { keyId: customKey?.id } : { platform: provider }),
+      }),
+    enabled: open && provider !== '',
+    retry: false,
+    staleTime: 0,
+    gcTime: 0,
+  })
+  const discoveredModels = [...(discover.data?.models ?? [])].sort((a, b) => a.id.localeCompare(b.id))
+
+  // The registered model id must be the unified one — OpenRouter-style
+  // ":free" slugs are just free variants of the same model, so the ":free"
+  // marker is stripped before it reaches the input.
+  const pickModel = (id: string) => {
+    const clean = id.replace(/:free$/i, '')
+    setModelId(clean)
+    setPickedId(clean)
+  }
 
   // Reference-model pool: native rows for the chosen platform, or the chosen
   // custom endpoint's own rows (matched by endpoint_scope == base_url).
@@ -949,6 +1155,7 @@ function AddModelDialog({
     setSupportsVision(false)
     setSupportsTools(false)
     setAttempted(false)
+    setPickedId('')
     setOpen(true)
   }
 
@@ -1037,7 +1244,18 @@ function AddModelDialog({
         >
           <div className="space-y-2">
             <Label className="text-xs">{t('config.providers.platform')}</Label>
-            <Select value={provider} onValueChange={(v) => setProvider(v ?? '')}>
+            <Select
+              value={provider}
+              onValueChange={(v) => {
+                setProvider(v ?? '')
+                // The model list and the reference pool belong to the previous
+                // platform — drop their selections so nothing stale survives.
+                setReferenceId('')
+                setModelId('')
+                setDisplayName('')
+                setPickedId('')
+              }}
+            >
               <SelectTrigger className="w-full" aria-invalid={attempted && !provider}>
                 <SelectValue placeholder={t('validation.required')}>
                   {providerOptions.find((p) => p.value === provider)?.label}
@@ -1056,19 +1274,60 @@ function AddModelDialog({
 
           <div className="space-y-2">
             <Label className="text-xs">{t('config.models.modelId')}</Label>
-            <Input
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              placeholder="gpt-4o-mini-2"
-              autoComplete="off"
-              aria-invalid={attempted && !modelId.trim()}
-            />
+            <div className="flex items-center gap-2">
+              {/* Manual entry is always allowed; the picker on the right just
+                  fills it from the fetched /models list. */}
+              <Input
+                className="min-w-0 flex-1"
+                value={modelId}
+                onChange={(e) => setModelId(e.target.value)}
+                placeholder="gpt-4o-mini-2"
+                autoComplete="off"
+                aria-invalid={attempted && !modelId.trim()}
+              />
+              <Select
+                value={pickedId}
+                onValueChange={(v) => pickModel(v ?? '')}
+                disabled={discover.isPending || discoveredModels.length === 0}
+              >
+                <SelectTrigger className="w-44 shrink-0" aria-invalid={attempted && !modelId}>
+                  <SelectValue
+                    placeholder={discover.isPending ? t('common.loading') : t('config.models.pickModelPlaceholder')}
+                  >
+                    {pickedId || undefined}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent className="overflow-x-auto">
+                  {discoveredModels.length === 0 && (
+                    <p className="px-3 py-2 text-xs text-muted-foreground">{t('keys.discoverEmpty')}</p>
+                  )}
+                  {discoveredModels.map((m) => (
+                    <SelectItem key={m.id} value={m.id} disabled={m.registered}>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{m.id}</span>
+                        {m.registered && (
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            ✓ {t('keys.discoverAlreadyAdded')}
+                          </span>
+                        )}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {provider && discover.isError && (
+              <p className="text-xs text-destructive">{(discover.error as Error).message}</p>
+            )}
+            {provider && discover.isSuccess && discoveredModels.length === 0 && (
+              <p className="text-xs text-muted-foreground">{t('keys.discoverEmpty')}</p>
+            )}
             {attempted && !modelId.trim() && <FieldError error={t('validation.required')} />}
           </div>
 
           <div className="space-y-2">
             <Label className="text-xs">{t('config.providers.label')}</Label>
-            <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="GPT-4o mini 2" />
+            <ExistingLabelPicker models={models} value={displayName} onChange={setDisplayName} />
           </div>
 
           {platformModels.length > 0 && (
@@ -1127,6 +1386,92 @@ function AddModelDialog({
             <DialogClose render={<Button type="button" variant="ghost" size="sm">{t('config.providers.cancel')}</Button>} />
             <Button type="submit" size="sm" disabled={add.isPending}>
               {add.isPending ? t('config.models.adding') : t('config.models.add')}
+            </Button>
+          </div>
+        </form>
+      </DialogPopup>
+    </Dialog>
+  )
+}
+
+/**
+ * Edit a registered model. The platform and the upstream model id are fixed —
+ * only the label (聚合模型 ID) may change, and the picker offers every label
+ * already in use so the model can join an existing failover group.
+ */
+function EditModelDialog({
+  model,
+  models,
+  onSaved,
+}: {
+  model: ConfigModel
+  models: ConfigModel[]
+  onSaved: () => void
+}) {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [label, setLabel] = useState('')
+
+  const openDialog = () => {
+    setLabel(model.displayName)
+    setOpen(true)
+  }
+
+  const save = useMutation({
+    meta: { silenceToast: true },
+    mutationFn: (patch: Record<string, unknown>) =>
+      apiFetch(`/api/models/${model.id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      toast.success(t('config.models.saved'))
+      setOpen(false)
+      onSaved()
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <Button variant="ghost" size="icon-sm" title={t('config.models.editModel')} onClick={openDialog}>
+        <Pencil />
+      </Button>
+      <DialogPopup maxWidth="max-w-md">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <DialogTitle>{t('config.models.editModel')}</DialogTitle>
+          <DialogClose className="-mr-1 rounded-lg p-1 text-muted-foreground/70 transition-colors outline-none hover:text-foreground">
+            <X className="size-4" />
+          </DialogClose>
+        </div>
+
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (label === model.displayName) {
+              setOpen(false)
+              return
+            }
+            save.mutate({ displayName: label })
+          }}
+        >
+          <div className="space-y-2">
+            <Label className="text-xs">{t('config.providers.platform')}</Label>
+            <Input disabled value={platformLabel(model.platform)} />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">{t('config.models.modelId')}</Label>
+            <Input disabled value={model.modelId} />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs">{t('config.providers.label')}</Label>
+            <ExistingLabelPicker models={models} value={label} onChange={setLabel} />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <DialogClose render={<Button type="button" variant="ghost" size="sm">{t('config.providers.cancel')}</Button>} />
+            <Button type="submit" size="sm" disabled={save.isPending}>
+              {save.isPending ? t('common.loading') : t('config.providers.save')}
             </Button>
           </div>
         </form>

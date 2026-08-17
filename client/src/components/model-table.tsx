@@ -102,7 +102,7 @@ export function ModelTableHead() {
           <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm" style={{ background: '#3b82f6' }} />{t('strategies.weightSpeed')}</span>
         </th>
         <th className="py-2 pr-3 font-medium">
-          <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm" style={{ background: '#a855f7' }} />{t('strategies.weightIntelligence')}</span>
+          <span className="inline-flex items-center gap-1"><span className="size-2 rounded-sm" style={{ background: '#60a5fa' }} />{t('strategies.weightIntelligence')}</span>
         </th>
         <th className="py-2 pr-3 font-medium">
           <Tooltip text={t('strategies.guardrailsTooltip')}>
@@ -168,7 +168,7 @@ export function RowContent({
           {row.supportsTools && (
             <span
               title={t('models.toolsTitle')}
-              className="text-[10px] rounded-full px-1.5 py-0.5 bg-violet-600/15 text-violet-700 dark:bg-violet-400/15 dark:text-violet-400"
+              className="text-[10px] rounded-full px-1.5 py-0.5 bg-blue-600/15 text-blue-700 dark:bg-blue-400/15 dark:text-blue-400"
             >
               {t('models.tools')}
             </span>
@@ -215,7 +215,7 @@ export function RowContent({
           metadata and stays. */}
       <td className="py-2 pr-3 align-middle">{row.totalRequests === 0 ? <AxisNoData /> : <AxisBar value={row.reliability} color="#22c55e" />}</td>
       <td className="py-2 pr-3 align-middle">{row.totalRequests === 0 ? <AxisNoData /> : <AxisBar value={row.speed} color="#3b82f6" />}</td>
-      <td className="py-2 pr-3 align-middle"><AxisBar value={row.intelligence} color="#a855f7" /></td>
+      <td className="py-2 pr-3 align-middle"><AxisBar value={row.intelligence} color="#60a5fa" /></td>
       <td className="py-2 pr-3 align-middle font-mono text-[11px] text-muted-foreground tabular-nums">
         {guard < 0.999 ? `×${guard.toFixed(2)}` : '—'}
       </td>
@@ -304,7 +304,7 @@ export function GroupHeaderCells({ group, rank, dragHandle, onToggleGroup, allRo
               <span title={t('models.visionTitle')} className="text-[10px] rounded-full px-1.5 py-0.5 bg-cyan-600/15 text-cyan-700 dark:bg-cyan-400/15 dark:text-cyan-400">{t('models.vision')}</span>
             )}
             {tools && (
-              <span title={t('models.toolsTitle')} className="text-[10px] rounded-full px-1.5 py-0.5 bg-violet-600/15 text-violet-700 dark:bg-violet-400/15 dark:text-violet-400">{t('models.tools')}</span>
+              <span title={t('models.toolsTitle')} className="text-[10px] rounded-full px-1.5 py-0.5 bg-blue-600/15 text-blue-700 dark:bg-blue-400/15 dark:text-blue-400">{t('models.tools')}</span>
             )}
           </Link>
           {/* Quick-copy the unified model id (#343). Stop propagation so it neither
@@ -320,7 +320,7 @@ export function GroupHeaderCells({ group, rank, dragHandle, onToggleGroup, allRo
       </td>
       <td className="py-2 pr-3 align-middle">{measured.length === 0 ? <AxisNoData /> : <AxisRangeBar values={measured.map(m => m.reliability)} color="#22c55e" />}</td>
       <td className="py-2 pr-3 align-middle">{measured.length === 0 ? <AxisNoData /> : <AxisRangeBar values={measured.map(m => m.speed)} color="#3b82f6" />}</td>
-      <td className="py-2 pr-3 align-middle"><AxisRangeBar values={group.members.map(m => m.intelligence)} color="#a855f7" /></td>
+      <td className="py-2 pr-3 align-middle"><AxisRangeBar values={group.members.map(m => m.intelligence)} color="#60a5fa" /></td>
       <td className="py-2 pr-3 align-middle font-mono text-[11px] text-muted-foreground tabular-nums">{guard < 0.999 ? `×${guard.toFixed(2)}` : '—'}</td>
       <td className="py-2 pr-3 align-middle text-right font-mono text-xs font-medium tabular-nums">
         {solo ? (

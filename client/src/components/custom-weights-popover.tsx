@@ -10,7 +10,7 @@ import type { RoutingWeights } from '@/lib/routing'
 const WEIGHT_AXES: { key: keyof RoutingWeights; tKey: string; color: string }[] = [
   { key: 'reliability', tKey: 'weightReliability', color: '#22c55e' },
   { key: 'speed', tKey: 'weightSpeed', color: '#3b82f6' },
-  { key: 'intelligence', tKey: 'weightIntelligence', color: '#a855f7' },
+  { key: 'intelligence', tKey: 'weightIntelligence', color: '#60a5fa' },
 ]
 
 // Slider popover for the 'custom' strategy. Sliders are independent (0-100)

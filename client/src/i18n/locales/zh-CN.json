@@ -918,7 +918,15 @@
       "referenceModel": "参考模型",
       "noReference": "不复制（使用默认值）",
       "contextWindow": "上下文窗口",
-      "modelId": "模型 ID"
+      "modelId": "模型 ID",
+      "fetchModels": "获取",
+      "fetchModelsHint": "填写 Base URL 后点击获取，拉取提供方的模型列表，勾选要添加的模型。",
+      "pickModelPlaceholder": "选择模型",
+      "pickLabelPlaceholder": "选择标签",
+      "noExistingLabels": "暂无已有标签",
+      "labelRuleHint": "使用统一模型 ID 可在所有提供方之间自动故障转移；使用某个提供方专属的 ID 则会将请求锁定到该提供方。",
+      "editModel": "编辑模型",
+      "saved": "模型已保存"
     },
     "backup": {
       "create": "创建备份",

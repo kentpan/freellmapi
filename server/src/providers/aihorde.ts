@@ -71,6 +71,10 @@ export class AIHordeProvider extends BaseProvider {
   keyless = true;
   private readonly baseUrl = 'https://oai.aihorde.net/v1';
 
+  override get apiBaseUrl(): string | null {
+    return this.baseUrl;
+  }
+
   /** Map the stored credential to the bearer we send upstream. The keyless flow
    * stores `'no-key'` (or nothing) for the anonymous case → send AI Horde's
    * documented anonymous key. Any other stored value is treated as a registered

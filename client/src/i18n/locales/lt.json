@@ -918,7 +918,15 @@
       "referenceModel": "Reference model",
       "noReference": "None (use defaults)",
       "contextWindow": "Context window",
-      "modelId": "Model ID"
+      "modelId": "Model ID",
+      "fetchModels": "Fetch",
+      "fetchModelsHint": "Fill in the Base URL, then click Fetch to load the provider's model list. Tick the models to register.",
+      "pickModelPlaceholder": "Pick a model",
+      "pickLabelPlaceholder": "Pick a label",
+      "noExistingLabels": "No existing labels yet",
+      "labelRuleHint": "Using the same label across providers enables automatic failover between them; a provider-specific label locks requests to that provider.",
+      "editModel": "Edit model",
+      "saved": "Model saved"
     },
     "backup": {
       "create": "Create backup",
